@@ -1,0 +1,8 @@
+[theme]
+base = "dark"
+paddingTop = "1rem"
+paddingBottom = "1rem"
+
+[theme.sidebar]
+paddingTop = "1rem"
+paddingBottom = "1rem"
