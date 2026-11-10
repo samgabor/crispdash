@@ -155,10 +155,10 @@ st.caption("sgRNA-1617 · BCL11A enhancer · GRCh38 (hg38) · Computational pred
 
 metric_grid = st.grid(4, min_column_width=160)
 for label, value in [
-    ("Predicted sites", len(df)),
-    ("Source exonic sites", int((df["regionType"] == "exon").sum())),
-    ("Maximum CFD score", f"{df['cfdOfftargetScore'].max():.3f}"),
-    ("Matching sites", len(filtered_df)),
+    ("Predicted Sites", len(df)),
+    ("Source Exonic Sites", int((df["regionType"] == "exon").sum())),
+    ("Maximum CFD Score", f"{df['cfdOfftargetScore'].max():.3f}"),
+    ("Matching Sites", len(filtered_df)),
 ]:
     metric_grid.metric(label, value, border=True)
 
