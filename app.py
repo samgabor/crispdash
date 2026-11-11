@@ -5,6 +5,7 @@ from urllib.parse import quote
 import plotly.express as px
 from requests.exceptions import RequestException
 from config import DEBUG
+from services.dataset import load_selected_offtargets
 
 from services.annotations import (
     collect_annotations, annotation_value, IncompleteAnnotations
@@ -17,19 +18,14 @@ st.set_page_config(
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 
-DATA_FILE = PROJECT_ROOT / "data" / "offtarget_sites.csv"
+DATA_FILE = PROJECT_ROOT / "data" / "Selected-CRISPOR-Guide-OffTargets.csv"
 EXPLORE_TAB = "Explore Sites"
 ANALYSIS_TAB = "Site Analysis"
 
-# Verified 2026-11-08: CRISPOR 5.2, sgRNA-1617 + AGG, human hg38.
-# This current run is separate from the published CRISPOR 4.2 dataset.
-CRISPOR_RESULTS_URL = (
-    "https://crispor.gi.ucsc.edu/crispor.py?batchId=FGYD8q8PWlNr2psRec6K"
-)
-
 @st.cache_data
-def load_data():
-    return pd.read_csv(DATA_FILE)
+def load_data(file_version):
+    # File modification time invalidates the cache when the seed CSV changes.
+    return load_selected_offtargets(DATA_FILE)
 
 
 @st.cache_data(ttl=3600)
@@ -72,7 +68,11 @@ def display_lookup_timing(annotations, key):
             )
 
 
-df = load_data()
+try:
+    df = load_data(DATA_FILE.stat().st_mtime_ns)
+except (OSError, ValueError) as error:
+    st.error(f"Unable to load the selected CRISPOR dataset: {error}")
+    st.stop()
 
 st.session_state.setdefault("analyzed_site", None)
 # Normalize older tab labels from existing browser sessions.
@@ -82,9 +82,9 @@ st.session_state["main_tab"] = {
 }.get(str(st.session_state.get("main_tab", EXPLORE_TAB)).casefold(), EXPLORE_TAB)
 
 
-def select_table_site(site_ids):
+def select_table_site(site_ids, table_key):
     """Map the selected display row to its site before the widgets rerun."""
-    cells = st.session_state["site_table"]["selection"]["cells"]
+    cells = st.session_state[table_key]["selection"]["cells"]
     if cells:
         st.session_state["selected_site"] = site_ids[cells[0][0]]
         st.session_state["main_tab"] = EXPLORE_TAB
@@ -95,38 +95,50 @@ def analyze_selected_site():
     st.session_state["main_tab"] = ANALYSIS_TAB
 
 
+def reset_guide_filters():
+    st.session_state["min_cfd"] = 0.0
+    st.session_state["region_filter"] = "All Regions"
+    st.session_state["selected_site"] = None
+    st.session_state["analyzed_site"] = None
+    st.session_state["main_tab"] = EXPLORE_TAB
+
+
 with st.sidebar:
     st.header("Guide & Filters")
     selected_guide = st.selectbox(
-        "Guide RNA", ["sgRNA-1617"], key="guide",
+        "Guide RNA", df["name"].drop_duplicates().tolist(), key="guide",
         accept_new_options=False, filter_mode=None,
-        help="Targets the BCL11A enhancer."
+        on_change=reset_guide_filters,
+        help="Select a guide from the CRISPOR seed dataset."
     )
-    st.caption("BCL11A enhancer · GRCh38 (hg38)")
+    guide_df = df[df["name"] == selected_guide].copy()
+    guide_metadata = guide_df.iloc[0]
+    st.caption(f"Target: {guide_metadata['target']} · Genome: {guide_metadata['genome']}")
+    st.caption(f"Disease: {guide_metadata['disease']}")
     with st.expander("Guide sequence & source"):
-        st.code("CTAACAGTTGCTTTTATCACagg", language=None)
-        st.caption("Guide-target DNA with PAM, as recorded in the published dataset.")
-        st.caption("Wu et al. (2019), Supplementary Table 5.")
+        st.code(guide_metadata["guideSeq"], language=None)
+        st.caption("Guide-target DNA including PAM (Protospacer Adjacent Motif, a short DNA sequence required for Cas9 to recognize and bind to target DNA), as supplied in the selected CRISPOR dataset.")
+        st.write("Target position:", guide_metadata["position"])
+        st.caption("Source: CRISPOR")
 
     st.link_button(
-        "Open sgRNA-1617 in CRISPOR",
-        CRISPOR_RESULTS_URL,
+        f"Open {selected_guide} in CRISPOR",
+        guide_metadata["crispor"],
         width="stretch",
-        help="Verified hg38 / NGG results: 155 predicted sites in CRISPOR 5.2."
+        help="Open the results URL supplied for this guide in the seed dataset."
     )
-    st.caption("Current CRISPOR results; this dashboard retains the 154 published sites.")
 
     min_cfd = st.slider(
-        "Minimum CFD score", 0.0, 1.0, 0.0, 0.01, key="min_cfd",
+        "Minimum CFD (Cutting Frequency Determination) score", min_value=0.0, max_value=1.0, step=0.01, key="min_cfd",
         help="Show sites at or above this sequence-based off-target score."
     )
     region_filter = st.selectbox(
         "Source genomic region", ["All Regions", "Intergenic", "Intron", "Exon"],
         accept_new_options=False, filter_mode=None,
-        key="region_filter", help="Region labels from the published dataset."
+        key="region_filter", help="Region labels supplied in the selected CRISPOR dataset."
     )
 
-filtered_df = df[df["cfdOfftargetScore"] >= min_cfd].copy()
+filtered_df = guide_df[guide_df["cfdOfftargetScore"] >= min_cfd].copy()
 if region_filter != "All Regions":
     filtered_df = filtered_df[
         filtered_df["regionType"].str.lower() == region_filter.lower()
@@ -148,16 +160,19 @@ with st.sidebar:
         width="stretch", disabled=not site_options, key="analyze",
         on_click=analyze_selected_site
     )
-    st.caption(f"{len(filtered_df)} of {len(df)} sites match the filters.")
+    st.caption(f"{len(filtered_df)} of {len(guide_df)} sites match the filters.")
 
 st.title("🧬 CRISPR Off-Target Dashboard")
-st.caption("sgRNA-1617 · BCL11A enhancer · GRCh38 (hg38) · Computational predictions and genomic annotations")
+st.caption(
+    f"{selected_guide} · {guide_metadata['target']} · {guide_metadata['disease']} · "
+    f"{guide_metadata['genome']} · Computational predictions and genomic annotations"
+)
 
 metric_grid = st.grid(4, min_column_width=160)
 for label, value in [
-    ("Predicted Sites", len(df)),
-    ("Source Exonic Sites", int((df["regionType"] == "exon").sum())),
-    ("Maximum CFD Score", f"{df['cfdOfftargetScore'].max():.3f}"),
+    ("Predicted Sites", len(guide_df)),
+    ("Source Exonic Sites", int((guide_df["regionType"] == "exon").sum())),
+    ("Maximum CFD Score", f"{guide_df['cfdOfftargetScore'].max():.3f}"),
     ("Matching Sites", len(filtered_df)),
 ]:
     metric_grid.metric(label, value, border=True)
@@ -175,13 +190,14 @@ with explore_tab:
         if filtered_df.empty:
             st.info("No sites match these filters. Lower the CFD threshold or choose another region.")
         else:
+            table_key = f"site_table_{selected_guide}"
             st.dataframe(
                 filtered_df, column_order=[
                     "siteId", "chrom", "start", "end", "mismatchCount",
                     "cfdOfftargetScore", "regionType"
                 ], width="stretch", hide_index=True, height=365,
-                key="site_table", selection_mode="single-cell",
-                on_select=lambda: select_table_site(site_options),
+                key=table_key, selection_mode="single-cell",
+                on_select=lambda: select_table_site(site_options, table_key),
                 alt="Predicted off-target sites matching the sidebar filters"
             )
         st.caption("Region categories are source labels; live Ensembl overlaps are reported separately in the analysis.")
@@ -220,7 +236,7 @@ with analysis_tab:
     if st.session_state["analyzed_site"] != selected_site or selected_site is None:
         st.info("Choose a matching site in the sidebar and select Analyze selected site to view its annotations.")
     else:
-        site = df[df["siteId"] == selected_site].iloc[0]
+        site = guide_df[guide_df["siteId"] == selected_site].iloc[0]
         chrom, start, end = str(site["chrom"]), int(site["start"]), int(site["end"])
         st.subheader(f"Analysis: {selected_site}")
         st.caption(
