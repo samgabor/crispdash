@@ -7,6 +7,7 @@ from services.rate_limit import RequestRateLimiter
 from services.timing import timed_get
 
 NCBI_BASE_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
+CLINVAR_GENE_RECORD_LIMIT = 100
 _request_limiter = RequestRateLimiter(10 if NCBI_API_KEY else 3)
 
 def ncbi_get(url, params, max_attempts=4):
@@ -473,7 +474,7 @@ def annotate_clinvar_gene(
     gene_chrom=None,
     gene_start=None,
     gene_end=None,
-    max_records=5
+    max_records=CLINVAR_GENE_RECORD_LIMIT
 ):
     """
     Retrieve a sample of clinically relevant ClinVar

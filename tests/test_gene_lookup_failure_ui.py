@@ -22,7 +22,9 @@ def overlap(gene_id, name="Unknown"):
 class GeneLookupFailureTests(unittest.TestCase):
     def setUp(self):
         st.cache_data.clear()
+        st.cache_resource.clear()
         self.addCleanup(st.cache_data.clear)
+        self.addCleanup(st.cache_resource.clear)
 
     def run_analysis(self, genes, lookup, gene_clinvar_error=None):
         with (
@@ -54,6 +56,38 @@ class GeneLookupFailureTests(unittest.TestCase):
         findings = summaries[0].set_index("Evidence Category")["Finding"]
         self.assertEqual(findings["Gene-Level ClinVar Search Matches"], "Unavailable (incomplete lookup)")
         self.assertEqual(findings["Direct ClinVar Variant Overlaps"], "0")
+
+    def test_variants_from_multiple_genes_share_one_linked_table(self):
+        first = overlap("ENSG_FIRST", "FIRST")
+        second = overlap("ENSG_SECOND", "SECOND")
+        shared = dict(variant_id="7105", title="NM_000110.4(DPYD):c.1132G>T (p.Glu378Ter)",
+                      clinical_significance="Pathogenic", review_status="criteria provided, single submitter")
+        other = {**shared, "variant_id": "7106", "title": "NM_000110.4(DPYD):c.2883_2884insTAAATG (p.Thr962Ter)"}
+
+        def gene_result(**kwargs):
+            variants = [shared] if kwargs["gene_symbol"] == "FIRST" else [shared, other]
+            return dict(search_count=2, records_examined=2, gene_variants=variants)
+
+        with (
+            patch("services.ensembl.get_overlapping_genes", return_value=[first, second]),
+            patch("services.ensembl.get_overlapping_exons", return_value=[]),
+            patch("services.ensembl.get_gene_information", side_effect=lambda gid: {
+                **(first if gid == "ENSG_FIRST" else second), "description": "Gene details"}),
+            patch("services.clinvar.get_ncbi_gene_summary", return_value=None),
+            patch("services.clinvar.annotate_clinvar_region", return_value={
+                "verified_variants": [], "search_count": 0, "truncated": False}),
+            patch("services.clinvar.annotate_clinvar_gene", side_effect=gene_result),
+        ):
+            app = AppTest.from_file(str(APP), default_timeout=20).run()
+            app.button(key="analyze").click().run()
+        self.assertFalse(app.exception, app.exception)
+        self.assertEqual(len(app.table), 1)
+        table = app.table[0].value
+        self.assertEqual(table.columns.tolist(), ["Variant", "Clinical significance", "Review status"])
+        self.assertEqual(len(table), 2)
+        self.assertIn("https://www.ncbi.nlm.nih.gov/clinvar/variation/7105/", table.iloc[0]["Variant"])
+        self.assertIn("p.Glu378Ter", table.iloc[0]["Variant"])
+        self.assertIn("https://www.ncbi.nlm.nih.gov/clinvar/variation/7106/", table.iloc[1]["Variant"])
 
     def test_exhausted_http_500_retries_do_not_crash_analysis(self):
         response = requests.Response()

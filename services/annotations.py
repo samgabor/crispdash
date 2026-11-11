@@ -2,6 +2,7 @@
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime, timezone
 from time import perf_counter
+from copy import deepcopy
 
 from requests.exceptions import RequestException
 
@@ -27,14 +28,17 @@ def has_gene_symbol(symbol):
     return bool(symbol and str(symbol).strip().lower() != "unknown")
 
 
-def collect_annotations(chrom, start, end):
+def collect_annotations(chrom, start, end, gene_record_limit=clinvar.CLINVAR_GENE_RECORD_LIMIT, on_update=None):
     """Start dependent lookups as soon as their own prerequisite completes.
 
     The coordinator owns all result dictionaries. Workers only run the existing
     REST service functions, whose shared rate limiters pace every request.
     """
     started = perf_counter()
-    results = {"values": {}, "errors": {}, "timings": {}}
+    results = {
+        "values": {}, "errors": {}, "timings": {}, "complete": False,
+        "retrieved_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
     genes_by_id = {}
     scheduled = set()
     with ThreadPoolExecutor(max_workers=6, thread_name_prefix="annotations") as pool:
@@ -45,9 +49,18 @@ def collect_annotations(chrom, start, end):
                 scheduled.add(key)
                 pending[pool.submit(timed_lookup, function, *args, **kwargs)] = key
 
+        def publish():
+            results["elapsed_seconds"] = perf_counter() - started
+            results["pending"] = list(pending.values())
+            if on_update is not None:
+                # This callback runs on the coordinator (Streamlit script)
+                # thread, never on a REST worker. Snapshots cannot change later.
+                on_update(deepcopy(results))
+
         submit(("genes",), ensembl.get_overlapping_genes, chrom, start, end)
         submit(("exons",), ensembl.get_overlapping_exons, chrom, start, end)
         submit(("clinvar",), clinvar.annotate_clinvar_region, chrom, start, end)
+        publish()
 
         while pending:
             completed, _ = wait(pending, return_when=FIRST_COMPLETED)
@@ -78,7 +91,7 @@ def collect_annotations(chrom, start, end):
                                 site_start=start, site_end=end,
                                 gene_chrom=gene["chromosome"],
                                 gene_start=int(gene["start"]),
-                                gene_end=int(gene["end"]), max_records=5,
+                                gene_end=int(gene["end"]), max_records=gene_record_limit,
                             )
 
                 elif key[0] == "gene_information":
@@ -90,6 +103,8 @@ def collect_annotations(chrom, start, end):
                         submit(("ncbi_summary", symbol),
                                clinvar.get_ncbi_gene_summary, symbol)
 
-    results["elapsed_seconds"] = perf_counter() - started
-    results["retrieved_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+                publish()
+
+        results["complete"] = True
+        publish()
     return results

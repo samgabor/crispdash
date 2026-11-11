@@ -1,6 +1,6 @@
 """Deterministic offline checks for concurrent annotation scheduling."""
 import unittest
-from threading import Barrier, Event, current_thread
+from threading import Barrier, Event, current_thread, get_ident
 from unittest.mock import patch
 
 import requests
@@ -14,6 +14,36 @@ GENE = dict(gene_id="ENSG_TEST", gene_name="TEST", biotype="protein_coding",
 
 
 class ParallelAnnotationTests(unittest.TestCase):
+    def test_progress_is_published_before_slow_requests_finish(self):
+        release_clinvar = Event()
+        snapshots = []
+        coordinator = get_ident()
+
+        def slow_clinvar(*args):
+            self.assertTrue(release_clinvar.wait(3), "No progress was published while ClinVar was pending")
+            return {"verified_variants": []}
+
+        def update(snapshot):
+            self.assertEqual(get_ident(), coordinator)
+            snapshots.append(snapshot)
+            if ("exons",) in snapshot["values"]:
+                release_clinvar.set()
+
+        with (
+            patch("services.ensembl.get_overlapping_genes", return_value=[]),
+            patch("services.ensembl.get_overlapping_exons", return_value=[]),
+            patch("services.clinvar.annotate_clinvar_region", side_effect=slow_clinvar),
+        ):
+            result = collect_annotations("1", 20, 42, on_update=update)
+        self.assertFalse(result["errors"])
+        early = next(s for s in snapshots if ("exons",) in s["values"])
+        self.assertNotIn(("clinvar",), early["values"])
+        self.assertFalse(early["complete"])
+        self.assertTrue(snapshots[-1]["complete"])
+        self.assertEqual(snapshots[-1]["pending"], [])
+        # Previously emitted snapshots stay unchanged after the run finishes.
+        self.assertEqual(snapshots[0]["values"], {})
+
     def test_initial_requests_overlap(self):
         rendezvous = Barrier(3, timeout=3)
         threads = set()
@@ -51,7 +81,7 @@ class ParallelAnnotationTests(unittest.TestCase):
             return GENE
 
         def gene_clinvar(**kwargs):
-            self.assertEqual(kwargs["max_records"], 5)
+            self.assertEqual(kwargs["max_records"], 100)
             details_and_clinvar.wait()
             return {"gene_variants": []}
 
