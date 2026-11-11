@@ -16,7 +16,9 @@ DATA = ROOT / "data" / "Selected-CRISPOR-Guide-OffTargets.csv"
 class MultiGuideTests(unittest.TestCase):
     def setUp(self):
         st.cache_data.clear()
+        st.cache_resource.clear()
         self.addCleanup(st.cache_data.clear)
+        self.addCleanup(st.cache_resource.clear)
         self.data = load_selected_offtargets(DATA)
 
     def test_each_guide_controls_sites_metrics_metadata_and_link(self):
@@ -29,7 +31,9 @@ class MultiGuideTests(unittest.TestCase):
             expected = self.data[self.data["name"] == name]
             self.assertEqual(app.selectbox(key="selected_site").options, expected["siteId"].tolist())
             self.assertEqual(int(app.metric[0].value), len(expected))
-            self.assertEqual(int(app.metric[1].value), int(expected["regionType"].eq("exon").sum()))
+            self.assertEqual(app.metric[1].label, "Median CFD Score")
+            self.assertEqual(app.metric[1].value, f"{expected['cfdOfftargetScore'].median():.4f}")
+            self.assertEqual(app.metric[2].value, f"{expected['cfdOfftargetScore'].max():.4f}")
             table = next(f.value for f in app.dataframe if "siteId" in f.value.columns)
             self.assertEqual(set(table["name"]), {name})
             link = next(link for link in app.get("link_button") if "CRISPOR" in link.proto.label)

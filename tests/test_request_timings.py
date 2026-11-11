@@ -16,7 +16,9 @@ from services.timing import capture_request_timings, timed_get, timed_lookup
 class RequestTimingTests(unittest.TestCase):
     def test_debug_visibility_and_repeated_analysis_navigation(self):
         st.cache_data.clear()
+        st.cache_resource.clear()
         self.addCleanup(st.cache_data.clear)
+        self.addCleanup(st.cache_resource.clear)
         request = dict(provider="Ensembl", endpoint="/test", query="", status="HTTP 200", elapsed_seconds=0.1)
         result = {
             "values": {("genes",): [], ("exons",): [], ("clinvar",): {
@@ -106,7 +108,9 @@ class RequestTimingTests(unittest.TestCase):
 
     def test_app_displays_each_rest_attempt_and_preserves_cached_timings(self):
         st.cache_data.clear()
+        st.cache_resource.clear()
         self.addCleanup(st.cache_data.clear)
+        self.addCleanup(st.cache_resource.clear)
 
         def get(url, params=None, **kwargs):
             data = ({"esearchresult": {"count": "0", "idlist": []}}
