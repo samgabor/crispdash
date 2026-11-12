@@ -248,8 +248,8 @@ def extract_grch38_locations(variant):
                 continue
 
             try:
-                start = int(start)
-                end = int(end)
+                start = int(str(start))
+                end = int(str(end))
             except (ValueError, TypeError):
                 continue
 
@@ -436,6 +436,8 @@ def search_clinvar_gene_pathogenic(gene_symbol, max_records=10):
     This does not establish overlap with an off-target site.
     """
 
+    if max_records < 1:
+        raise ValueError("max_records must be at least 1.")
     url = f"{NCBI_BASE_URL}/esearch.fcgi"
 
     search_term = (
@@ -457,14 +459,29 @@ def search_clinvar_gene_pathogenic(gene_symbol, max_records=10):
 
     search_result = data.get("esearchresult", {})
 
+    variant_ids = search_result.get("idlist", [])
+    total_count = int(search_result.get("count", 0))
     return {
         "gene": gene_symbol,
-        "total_count": int(
-            search_result.get("count", 0)
-        ),
-        "variant_ids": search_result.get("idlist", []),
+        "total_count": total_count,
+        "variant_ids": variant_ids,
+        "records_retrieved": len(variant_ids),
+        "truncated": len(variant_ids) < total_count,
         "search_term": search_term
     }
+
+def validated_gene_interval(chrom, start, end):
+    """Return a usable Ensembl interval, or None when verification is unavailable."""
+    if chrom is None or not str(chrom).strip():
+        return None
+    try:
+        # Reject fractional coordinates rather than silently rounding them.
+        start, end = int(str(start)), int(str(end))
+    except (TypeError, ValueError):
+        return None
+    if start < 1 or end < start:
+        return None
+    return str(chrom).strip().removeprefix("chr"), start, end
 
 def annotate_clinvar_gene(
     gene_symbol,
@@ -491,7 +508,13 @@ def annotate_clinvar_gene(
 
     gene_variants = []
     direct_overlaps = []
-    excluded_count = 0
+    outcomes = []
+    exclusion_keys = (
+        "classification_excluded_count", "missing_grch38_count",
+        "missing_gene_boundaries_count", "outside_gene_count",
+    )
+    counts = dict.fromkeys(exclusion_keys, 0)
+    gene_interval = validated_gene_interval(gene_chrom, gene_start, gene_end)
 
     for variant_id in search_result["variant_ids"]:
 
@@ -505,29 +528,23 @@ def annotate_clinvar_gene(
             "description", ""
         ).strip()
 
-        # Verify the displayed aggregate classification
-        if significance.lower() not in {
-            "pathogenic",
-            "likely pathogenic"
-        }:
-            excluded_count += 1
-            continue
-
-        locations = extract_grch38_locations(variant)
-
-        if not locations:
-            excluded_count += 1
-            continue
-
-        overlaps_site = any(
-            check_genomic_overlap(
-                site_chrom,
-                site_start,
-                site_end,
-                location
-            )
-            for location in locations
-        )
+        locations = []
+        # First applicable outcome wins; a direct overlap needs no gene interval.
+        if significance.lower() not in {"pathogenic", "likely pathogenic"}:
+            outcome = "classification_excluded"
+        else:
+            locations = extract_grch38_locations(variant)
+            if not locations:
+                outcome = "missing_grch38"
+            elif any(check_genomic_overlap(site_chrom, site_start, site_end, loc)
+                     for loc in locations):
+                outcome = "direct_overlap"
+            elif gene_interval is None:
+                outcome = "missing_gene_boundaries"
+            elif any(check_genomic_overlap(*gene_interval, loc) for loc in locations):
+                outcome = "verified_elsewhere"
+            else:
+                outcome = "outside_gene"
 
         variant_info = {
             "variant_id": variant_id,
@@ -541,44 +558,38 @@ def annotate_clinvar_gene(
             "locations": locations
         }
 
-        if overlaps_site:
+        outcomes.append({
+            "variant_id": str(variant_id),
+            "title": variant_info["title"],
+            "clinical_significance": clinical.get("description", ""),
+            "outcome": outcome,
+        })
+        if outcome == "direct_overlap":
             direct_overlaps.append(variant_info)
-
+        elif outcome == "verified_elsewhere":
+            gene_variants.append(variant_info)
         else:
-            # Check whether the variant overlaps
-            # the Ensembl gene boundaries.
-            if (
-                    gene_chrom is not None
-                    and gene_start is not None
-                    and gene_end is not None
-            ):
-                within_gene = any(
-                    str(location["chromosome"]).removeprefix("chr")
-                    == str(gene_chrom).removeprefix("chr")
-                    and location["start"] <= gene_end
-                    and location["end"] >= gene_start
-                    for location in locations
-                )
+            counts[f"{outcome}_count"] += 1
 
-                if within_gene:
-                    gene_variants.append(variant_info)
-                else:
-                    excluded_count += 1
-
-            else:
-                # Gene boundaries were not supplied.
-                # Do not claim the variant is within the gene.
-                excluded_count += 1
+    excluded_count = sum(counts.values())
+    records_examined = len(outcomes)
+    if records_examined != excluded_count + len(direct_overlaps) + len(gene_variants):
+        raise RuntimeError("ClinVar verification outcome counts do not reconcile.")
 
     return {
         "gene": gene_symbol,
         "search_count": search_result["total_count"],
-        "records_examined": len(
-            search_result["variant_ids"]
-        ),
+        "records_examined": records_examined,
+        "records_retrieved": len(search_result["variant_ids"]),
         "gene_variants": gene_variants,
         "direct_overlaps": direct_overlaps,
-        "excluded_count": excluded_count
+        "excluded_count": excluded_count,
+        **counts,
+        "direct_overlap_count": len(direct_overlaps),
+        "verified_elsewhere_count": len(gene_variants),
+        "truncated": len(search_result["variant_ids"]) < search_result["total_count"],
+        "gene_boundaries_available": gene_interval is not None,
+        "verification_outcomes": outcomes,
     }
 
 def get_ncbi_gene_summary(gene_symbol):
