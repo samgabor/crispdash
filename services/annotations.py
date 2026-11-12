@@ -89,9 +89,9 @@ def collect_annotations(chrom, start, end, gene_record_limit=clinvar.CLINVAR_GEN
                                 ("gene_clinvar", gene_id), clinvar.annotate_clinvar_gene,
                                 gene_symbol=symbol, site_chrom=chrom,
                                 site_start=start, site_end=end,
-                                gene_chrom=gene["chromosome"],
-                                gene_start=int(gene["start"]),
-                                gene_end=int(gene["end"]), max_records=gene_record_limit,
+                                gene_chrom=gene.get("chromosome"),
+                                gene_start=gene.get("start"),
+                                gene_end=gene.get("end"), max_records=gene_record_limit,
                             )
 
                 elif key[0] == "gene_information":
