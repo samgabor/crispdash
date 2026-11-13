@@ -371,9 +371,14 @@ def render_annotation_results(annotations, site, selected_site, slots, timing_st
                     variants = clinvar_result["verified_variants"]
 
                     st.caption(
-                        f"Candidate ClinVar records retrieved: "
+                        f"ClinVar region-search matches: "
                         f"{clinvar_result['search_count']}"
                     )
+                    if "records_retrieved" in clinvar_result:
+                        st.caption(
+                            f"Candidate ClinVar records retrieved: {clinvar_result['records_retrieved']} · "
+                            f"Records individually examined: {clinvar_result['records_examined']}"
+                        )
 
                     if clinvar_result["truncated"]:
                         st.warning(

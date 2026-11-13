@@ -111,19 +111,30 @@ def search_clinvar_region(chrom, start, end, max_records=1000):
     if max_records < 1:
         raise ValueError("max_records must be at least 1.")
 
+    # ClinVar can index a structural variant's endpoints without indexing the
+    # bases between them. Preserve narrow matches and also retrieve candidates
+    # with indexed positions on both sides of the site. These ranges generate
+    # candidates only; returned GRCh38 intervals still require overlap checks.
+    # This broad numeric ceiling exceeds GRCh38 chromosome lengths; it is not
+    # a gene boundary or a limit on how far a spanning variant may extend.
+    position_ceiling = max(end, 999_999_999)
     search_term = (
-        f"{chrom}[chr] AND {start}:{end}[chrpos38]"
+        f"{chrom}[chr] AND ("
+        f"{start}:{end}[chrpos38] OR ("
+        f"1:{end}[chrpos38] AND {start}:{position_ceiling}[chrpos38]))"
     )
 
     url = f"{NCBI_BASE_URL}/esearch.fcgi"
 
     variant_ids = []
+    seen_ids = set()
+    offset = 0
     total_count = None
     page_size = 100
 
     while True:
 
-        remaining = max_records - len(variant_ids)
+        remaining = max_records - offset
 
         if remaining <= 0:
             break
@@ -132,7 +143,7 @@ def search_clinvar_region(chrom, start, end, max_records=1000):
             "db": "clinvar",
             "term": search_term,
             "retmode": "json",
-            "retstart": len(variant_ids),
+            "retstart": offset,
             "retmax": min(page_size, remaining),
             "tool": "crispr_offtarget_dashboard",
         }
@@ -153,9 +164,15 @@ def search_clinvar_region(chrom, start, end, max_records=1000):
         if not page_ids:
             break
 
-        variant_ids.extend(page_ids)
+        # Advance by raw search hits, even if a repeated ID crosses a page.
+        # Each candidate summary is examined once within the retrieval budget.
+        offset += len(page_ids)
+        for variant_id in page_ids:
+            if variant_id not in seen_ids:
+                seen_ids.add(variant_id)
+                variant_ids.append(variant_id)
 
-        if len(variant_ids) >= total_count:
+        if offset >= total_count:
             break
 
         # ncbi_get applies the shared request limiter to every page.
@@ -163,6 +180,7 @@ def search_clinvar_region(chrom, start, end, max_records=1000):
     return {
         "total_count": total_count,
         "variant_ids": variant_ids,
+        "records_retrieved": len(variant_ids),
         "search_term": search_term,
         "truncated": len(variant_ids) < total_count,
     }
@@ -329,7 +347,7 @@ def annotate_clinvar_region(chrom, start, end):
         search_count: Number of candidate records found
         verified_variants: Variants with confirmed GRCh38 overlap
         truncated: Whether the search returned more records
-                   than the current 100-record retrieval limit
+                   than the current 1,000-record retrieval limit
     """
 
     search_result = search_clinvar_region(chrom, start, end)
@@ -386,6 +404,8 @@ def annotate_clinvar_region(chrom, start, end):
 
     return {
         "search_count": search_result["total_count"],
+        "records_retrieved": len(variant_ids),
+        "records_examined": len(variant_ids),
         "verified_variants": verified_variants,
         "truncated": search_result["truncated"],
     }
