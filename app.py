@@ -34,8 +34,8 @@ def get_annotation_cache():
 
 
 def load_site_annotations(chrom, start, end, gene_record_limit, on_update=None):
-    # Earlier snapshots lack the ClinVar verification breakdown.
-    key = ("clinvar-verification-v1", chrom, start, end, gene_record_limit)
+    # Earlier snapshots use the narrower ClinVar region query.
+    key = ("clinvar-spanning-overlaps-v2", chrom, start, end, gene_record_limit)
     cache = get_annotation_cache()
     cached = cache.get(key)
     if cached is not None:
