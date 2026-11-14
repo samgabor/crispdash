@@ -304,7 +304,8 @@ with analysis_tab:
 
                 st.write(
                     "**Off-Target Sequence:**",
-                    site["offtargetSeq"]
+                    # make PAM lower case by convention (should do in data load)
+                    site["offtargetSeq"][:-3] + site["offtargetSeq"][-3:].lower()
                 )
 
             with col2:

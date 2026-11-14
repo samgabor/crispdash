@@ -401,7 +401,10 @@ def render_annotation_results(annotations, site, selected_site, slots, timing_st
                             for location in variant["locations"]:
 
                                 clinvar_rows.append({
-                                    "ClinVar ID": variant["clinvar_id"],
+                                    "ClinVar ID": (
+                                        "https://www.ncbi.nlm.nih.gov/clinvar/variation/"
+                                        f"{quote(str(variant['clinvar_id']), safe='')}/"
+                                    ),
                                     "Variant": variant["variant_name"],
                                     "Chromosome": location["chromosome"],
                                     "Start": location["start"],
@@ -422,7 +425,16 @@ def render_annotation_results(annotations, site, selected_site, slots, timing_st
                         st.dataframe(
                             clinvar_df,
                             width="stretch",
-                            hide_index=True
+                            hide_index=True,
+                            column_config={
+                                "ClinVar ID": st.column_config.LinkColumn(
+                                    "ClinVar ID",
+                                    help="Open this variant's NCBI ClinVar record in a new tab.",
+                                    display_text=r"variation/(\d+)/",
+                                    alignment="left",
+                                ),
+                            },
+                            alt="Verified ClinVar site overlaps with linked ClinVar IDs",
                         )
 
                     else:
