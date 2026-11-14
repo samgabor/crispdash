@@ -54,13 +54,14 @@ class VerificationOutcomeTests(unittest.TestCase):
                    variant("Uncertain significance"), variant("Pathogenic/Likely pathogenic"),
                    variant("Conflicting classifications of pathogenicity"), variant(chrom="2")]
         result = annotate(records)
-        self.assertEqual(result["verified_elsewhere_count"], 2)
+        self.assertEqual(result["verified_elsewhere_count"], 3)
         self.assertEqual(result["direct_overlap_count"], 1)
         self.assertEqual(result["outside_gene_count"], 2)
         self.assertEqual(result["missing_grch38_count"], 1)
-        self.assertEqual(result["classification_excluded_count"], 3)
+        self.assertEqual(result["classification_excluded_count"], 2)
         self.assertEqual(result["verification_outcomes"][6]["clinical_significance"],
                          "Pathogenic/Likely pathogenic")
+        self.assertEqual(result["verification_outcomes"][6]["outcome"], "verified_elsewhere")
         self.assert_reconciles(result)
 
     def test_unavailable_boundaries_and_precedence(self):
@@ -141,7 +142,7 @@ class VerificationOutcomeTests(unittest.TestCase):
 
 class VerificationUITests(unittest.TestCase):
     def test_breakdown_and_debug_visibility(self):
-        result = annotate([variant("Pathogenic/Likely pathogenic")])
+        result = annotate([variant("association")])
         for debug in [False, True]:
             with self.subTest(debug=debug):
                 app = AppTest.from_function(verification_ui, args=(result, debug)).run()
@@ -150,7 +151,7 @@ class VerificationUITests(unittest.TestCase):
                 self.assertEqual(len(app.dataframe), 2 if debug else 1)
                 if debug:
                     self.assertEqual(app.dataframe[1].value.iloc[0]["Original classification"],
-                                     "Pathogenic/Likely pathogenic")
+                                     "association")
                 self.assertTrue(any("does not establish" in e.value for e in app.info))
 
     def test_truncation_and_missing_boundary_warnings(self):

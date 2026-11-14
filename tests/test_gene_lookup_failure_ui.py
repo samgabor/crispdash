@@ -55,7 +55,7 @@ class GeneLookupFailureTests(unittest.TestCase):
                      if "Evidence Category" in table.value.columns]
         findings = summaries[0].set_index("Evidence Category")["Finding"]
         self.assertEqual(findings["Gene-Level ClinVar Search Matches"], "Unavailable (incomplete lookup)")
-        self.assertEqual(findings["Direct ClinVar Variant Overlaps"], "0")
+        self.assertEqual(findings["Direct ClinVar Overlaps (selected classification filter)"], "0")
 
     def test_variants_from_multiple_genes_share_one_linked_table(self):
         first = overlap("ENSG_FIRST", "FIRST")

@@ -5,7 +5,7 @@ import plotly.express as px
 from services.dataset import load_selected_offtargets
 from services.annotation_cache import AnnotationCache
 from ui.analysis_results import render_annotation_results
-from services.clinvar import CLINVAR_GENE_RECORD_LIMIT
+from services.clinvar import CLINVAR_GENE_RECORD_LIMIT, CLINVAR_REGION_RECORD_LIMIT
 
 from services.annotations import (
     collect_annotations, IncompleteAnnotations
@@ -33,15 +33,18 @@ def get_annotation_cache():
     return AnnotationCache(ttl=3600)
 
 
-def load_site_annotations(chrom, start, end, gene_record_limit, on_update=None):
-    # Earlier snapshots use the narrower ClinVar region query.
-    key = ("clinvar-spanning-overlaps-v2", chrom, start, end, gene_record_limit)
+def load_site_annotations(chrom, start, end, gene_record_limit, on_update=None,
+                          *, site_record_limit=CLINVAR_REGION_RECORD_LIMIT):
+    # Results from one pair of limits must not satisfy a different request.
+    key = ("clinvar-search-parameters-v4", chrom, start, end,
+           gene_record_limit, site_record_limit)
     cache = get_annotation_cache()
     cached = cache.get(key)
     if cached is not None:
         return cached
     results = collect_annotations(
-        chrom, start, end, gene_record_limit=gene_record_limit, on_update=on_update
+        chrom, start, end, gene_record_limit=gene_record_limit, on_update=on_update,
+        site_record_limit=site_record_limit,
     )
     if results["errors"]:
         raise IncompleteAnnotations(results)
@@ -57,6 +60,10 @@ except (OSError, ValueError) as error:
     st.stop()
 
 st.session_state.setdefault("analyzed_site", None)
+st.session_state.setdefault("analysis_search_parameters", {
+    "site_record_limit": CLINVAR_REGION_RECORD_LIMIT,
+    "gene_record_limit": CLINVAR_GENE_RECORD_LIMIT,
+})
 # Normalize older tab labels from existing browser sessions.
 st.session_state["main_tab"] = {
     EXPLORE_TAB.casefold(): EXPLORE_TAB,
@@ -73,6 +80,16 @@ def select_table_site(site_ids, table_key):
 
 
 def analyze_selected_site():
+    site_limit = st.session_state["clinvar_site_limit"]
+    gene_limit = st.session_state["clinvar_gene_limit"]
+    if site_limit is None or gene_limit is None or site_limit < 1 or gene_limit < 1:
+        st.session_state["search_parameter_error"] = "Enter positive whole numbers for both ClinVar search limits."
+        return
+    st.session_state.pop("search_parameter_error", None)
+    # Capture the limits only on Analyze. Later widget edits remain drafts.
+    st.session_state["analysis_search_parameters"] = {
+        "site_record_limit": int(site_limit), "gene_record_limit": int(gene_limit),
+    }
     st.session_state["analyzed_site"] = st.session_state["selected_site"]
     st.session_state["main_tab"] = ANALYSIS_TAB
 
@@ -142,6 +159,32 @@ with st.sidebar:
         width="stretch", disabled=not site_options, key="analyze",
         on_click=analyze_selected_site
     )
+    with st.expander("Search Parameters", expanded=False):
+        st.caption(
+            "Search limit changes apply when you click Analyze Selected Site and persist across guides "
+            "and sites for this session. Higher limits can increase lookup time."
+        )
+        st.number_input(
+            "Maximum ClinVar site-overlap candidates",
+            min_value=1, value=CLINVAR_REGION_RECORD_LIMIT, step=1,
+            key="clinvar_site_limit", on_change="ignore", required=True,
+            help="Maximum candidate records retrieved by the genomic-region search. Default: 1,000.",
+        )
+        st.number_input(
+            "Maximum ClinVar records examined per gene",
+            min_value=1, value=CLINVAR_GENE_RECORD_LIMIT, step=1,
+            key="clinvar_gene_limit", on_change="ignore", required=True,
+            help="Maximum records examined from each gene's pathogenic/likely pathogenic search. Default: 100.",
+        )
+        st.checkbox(
+            "Include other classifications in site overlaps",
+            key="clinvar_include_other", value=False,
+            help="Updates the site-overlap table and Evidence Summary immediately using retrieved records. "
+                 "By default, only Pathogenic, Likely pathogenic, and Pathogenic/Likely pathogenic "
+                 "aggregate classifications are shown. Gene Context always uses these categories.",
+        )
+    if st.session_state.get("search_parameter_error"):
+        st.error(st.session_state["search_parameter_error"])
     st.caption(f"{len(filtered_df)} of {len(guide_df)} sites match the filters.")
 
 st.title("🧬 CRISPR Off-Target Dashboard")
@@ -328,11 +371,16 @@ with analysis_tab:
         }
 
         def show_progress(snapshot):
-            render_annotation_results(snapshot, site, selected_site, slots, timing_status)
+            render_annotation_results(
+                snapshot, site, selected_site, slots, timing_status,
+                include_other_classifications=st.session_state["clinvar_include_other"],
+            )
 
         try:
+            applied_parameters = st.session_state["analysis_search_parameters"]
             annotations = load_site_annotations(
-                chrom, start, end, CLINVAR_GENE_RECORD_LIMIT, on_update=show_progress
+                chrom, start, end, applied_parameters["gene_record_limit"],
+                on_update=show_progress, site_record_limit=applied_parameters["site_record_limit"],
             )
         except IncompleteAnnotations as error:
             annotations = error.results

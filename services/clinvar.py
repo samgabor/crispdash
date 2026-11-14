@@ -8,6 +8,7 @@ from services.timing import timed_get
 
 NCBI_BASE_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
 CLINVAR_GENE_RECORD_LIMIT = 100
+CLINVAR_REGION_RECORD_LIMIT = 1000
 _request_limiter = RequestRateLimiter(10 if NCBI_API_KEY else 3)
 
 def ncbi_get(url, params, max_attempts=4):
@@ -77,7 +78,7 @@ def ncbi_get(url, params, max_attempts=4):
             time.sleep(wait_seconds)
 
 
-def search_clinvar_region(chrom, start, end, max_records=1000):
+def search_clinvar_region(chrom, start, end, max_records=CLINVAR_REGION_RECORD_LIMIT):
     """
     Search ClinVar for candidate variants using GRCh38 coordinates.
 
@@ -339,18 +340,31 @@ def check_genomic_overlap(
         and variant_end >= site_start
     )
 
-def annotate_clinvar_region(chrom, start, end):
+def is_pathogenic_classification(classification):
+    """Accept exact aggregate P/LP categories, never substring matches or conflicts."""
+    return str(classification or "").strip().casefold() in {
+        "pathogenic", "likely pathogenic", "pathogenic/likely pathogenic",
+    }
+
+
+def filter_clinvar_overlaps(variants, include_other=False):
+    """Filter verified overlaps locally, preserving the full retrieved population."""
+    return [variant for variant in variants if include_other or
+            is_pathogenic_classification(variant.get("clinical_significance"))]
+
+
+def annotate_clinvar_region(chrom, start, end, max_records=CLINVAR_REGION_RECORD_LIMIT):
     """
     Search ClinVar and verify GRCh38 genomic overlaps.
 
     Returns:
         search_count: Number of candidate records found
         verified_variants: Variants with confirmed GRCh38 overlap
-        truncated: Whether the search returned more records
-                   than the current 1,000-record retrieval limit
+        truncated: Whether some search matches were not retrieved
+                   within max_records (default 1,000).
     """
 
-    search_result = search_clinvar_region(chrom, start, end)
+    search_result = search_clinvar_region(chrom, start, end, max_records=max_records)
 
     variant_ids = search_result["variant_ids"]
     verified_variants = []
@@ -550,7 +564,7 @@ def annotate_clinvar_gene(
 
         locations = []
         # First applicable outcome wins; a direct overlap needs no gene interval.
-        if significance.lower() not in {"pathogenic", "likely pathogenic"}:
+        if not is_pathogenic_classification(significance):
             outcome = "classification_excluded"
         else:
             locations = extract_grch38_locations(variant)

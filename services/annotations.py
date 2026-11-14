@@ -28,16 +28,21 @@ def has_gene_symbol(symbol):
     return bool(symbol and str(symbol).strip().lower() != "unknown")
 
 
-def collect_annotations(chrom, start, end, gene_record_limit=clinvar.CLINVAR_GENE_RECORD_LIMIT, on_update=None):
+def collect_annotations(chrom, start, end, gene_record_limit=clinvar.CLINVAR_GENE_RECORD_LIMIT,
+                        on_update=None, *, site_record_limit=clinvar.CLINVAR_REGION_RECORD_LIMIT):
     """Start dependent lookups as soon as their own prerequisite completes.
 
     The coordinator owns all result dictionaries. Workers only run the existing
     REST service functions, whose shared rate limiters pace every request.
     """
+    if gene_record_limit < 1 or site_record_limit < 1:
+        raise ValueError("ClinVar record limits must be at least 1.")
     started = perf_counter()
     results = {
         "values": {}, "errors": {}, "timings": {}, "complete": False,
         "retrieved_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "search_parameters": {"site_record_limit": site_record_limit,
+                              "gene_record_limit": gene_record_limit},
     }
     genes_by_id = {}
     scheduled = set()
@@ -59,7 +64,8 @@ def collect_annotations(chrom, start, end, gene_record_limit=clinvar.CLINVAR_GEN
 
         submit(("genes",), ensembl.get_overlapping_genes, chrom, start, end)
         submit(("exons",), ensembl.get_overlapping_exons, chrom, start, end)
-        submit(("clinvar",), clinvar.annotate_clinvar_region, chrom, start, end)
+        submit(("clinvar",), clinvar.annotate_clinvar_region, chrom, start, end,
+               site_record_limit)
         publish()
 
         while pending:

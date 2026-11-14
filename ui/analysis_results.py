@@ -6,7 +6,8 @@ import streamlit as st
 from requests.exceptions import RequestException
 import config
 from services.annotations import annotation_value
-from services.clinvar import CLINVAR_GENE_RECORD_LIMIT
+from services.clinvar import (CLINVAR_GENE_RECORD_LIMIT, CLINVAR_REGION_RECORD_LIMIT,
+                             filter_clinvar_overlaps)
 
 VERIFICATION_LABELS = {
     "classification_excluded": "Excluded: clinical classification",
@@ -100,13 +101,22 @@ def display_lookup_timing(annotations, key):
             )
 
 
-def render_annotation_results(annotations, site, selected_site, slots, timing_status):
+def render_annotation_results(annotations, site, selected_site, slots, timing_status,
+                              *, include_other_classifications=False):
+    parameters = annotations.get("search_parameters", {})
+    gene_record_limit = parameters.get("gene_record_limit", CLINVAR_GENE_RECORD_LIMIT)
+    site_record_limit = parameters.get("site_record_limit", CLINVAR_REGION_RECORD_LIMIT)
     def ready(key):
         return key in annotations["values"] or key in annotations["errors"]
 
     genes = annotations["values"].get(("genes",))
     exons = annotations["values"].get(("exons",))
     clinvar_result = annotations["values"].get(("clinvar",))
+    all_site_overlaps = clinvar_result["verified_variants"] if clinvar_result else []
+    displayed_site_overlaps = filter_clinvar_overlaps(
+        all_site_overlaps, include_other=include_other_classifications)
+    classification_filter = ("All classifications" if include_other_classifications else
+                             "Pathogenic / Likely pathogenic (including combined)")
     chrom, start, end = str(site["chrom"]), int(site["start"]), int(site["end"])
     gene_detail_failures = []
     gene_clinvar_failures = []
@@ -357,6 +367,7 @@ def render_annotation_results(annotations, site, selected_site, slots, timing_st
             st.info('Loading ClinVar site overlaps...')
         else:
             st.subheader("ClinVar Variant Annotations")
+            st.caption(f"Search limit: up to {site_record_limit:,} candidate records for this site.")
             st.caption(
                 "This tab reports the genomic-region search. Gene searches can return additional "
                 "records with verified direct overlaps; those counts appear in ClinVar Gene Context."
@@ -368,7 +379,12 @@ def render_annotation_results(annotations, site, selected_site, slots, timing_st
                 try:
                     clinvar_result = annotation_value(annotations, ("clinvar",))
 
-                    variants = clinvar_result["verified_variants"]
+                    variants = displayed_site_overlaps
+                    st.caption(f"Classification filter: {classification_filter}")
+                    st.caption(
+                        f"Verified genomic overlaps among examined records: {len(all_site_overlaps)} · "
+                        f"Meet the selected classification filter: {len(variants)}"
+                    )
 
                     st.caption(
                         f"ClinVar region-search matches: "
@@ -391,7 +407,7 @@ def render_annotation_results(annotations, site, selected_site, slots, timing_st
 
                         st.success(
                             f"Found {len(variants)} verified "
-                            f"ClinVar genomic overlap(s)."
+                            f"ClinVar genomic overlap(s) matching the selected classification filter."
                         )
 
                         clinvar_rows = []
@@ -440,9 +456,9 @@ def render_annotation_results(annotations, site, selected_site, slots, timing_st
                     else:
 
                         st.info(
-                            "No verified ClinVar overlaps were identified "
-                            "among the records returned by the current "
-                            "genomic-coordinate search."
+                            "No ClinVar overlaps matching the selected classification filter "
+                            "were verified among the records examined. This does not establish "
+                            "that the site is safe or that no other ClinVar overlaps exist."
                         )
 
                 except Exception as error:
@@ -461,7 +477,7 @@ def render_annotation_results(annotations, site, selected_site, slots, timing_st
         else:
             st.subheader("Gene-Level ClinVar Context")
             st.caption(
-                f"Sampling limit: only the first {CLINVAR_GENE_RECORD_LIMIT} records returned "
+                f"Sampling limit: only the first {gene_record_limit:,} records returned "
                 "by the pathogenic/likely pathogenic ClinVar search are examined per gene "
                 "(or all returned records when fewer are available). This is not an exhaustive review."
             )
@@ -617,9 +633,7 @@ def render_annotation_results(annotations, site, selected_site, slots, timing_st
                     # ----------------------------------------
 
                     # Direct ClinVar results
-                    direct_clinvar_count = len(
-                        clinvar_result["verified_variants"]
-                    )
+                    direct_clinvar_count = len(displayed_site_overlaps)
 
                     # Gene-level ClinVar results
                     gene_clinvar_matches = "Not applicable"
@@ -656,7 +670,7 @@ def render_annotation_results(annotations, site, selected_site, slots, timing_st
                             "Genomic Region",
                             "Overlapping Genes (Ensembl)",
                             "Overlapping Exons (Ensembl)",
-                            "Direct ClinVar Variant Overlaps",
+                            "Direct ClinVar Overlaps (selected classification filter)",
                             "Gene-Level ClinVar Search Matches",
                             "Gene-Level Records Examined",
                             "Verified Variants Elsewhere in Gene"
@@ -700,14 +714,18 @@ def render_annotation_results(annotations, site, selected_site, slots, timing_st
                     st.subheader("Evidence at a glance")
                     st.write("**Overlapping genes:**", gene_summary)
                     st.write("**Overlapping exons:**", exon_summary)
-                    st.write("**Verified exact-site ClinVar overlaps:**", direct_clinvar_count)
+                    st.write("**Verified exact-site ClinVar overlaps (selected filter):**", direct_clinvar_count)
+                    st.caption(
+                        f"Classification filter: {classification_filter}. "
+                        f"Total verified genomic overlaps before filtering: {len(all_site_overlaps)}."
+                    )
                     st.caption(
                         "This overlap count comes from the genomic-region search. The ClinVar Gene "
                         "Context tab separately reports any direct overlaps verified from gene search matches."
                     )
                     st.write("**Verified variants elsewhere in gene(s):**", gene_clinvar_verified)
                     st.caption(
-                        f"Gene-level context examines only the first {CLINVAR_GENE_RECORD_LIMIT} "
+                        f"Gene-level context examines only the first {gene_record_limit:,} "
                         "returned records per named gene, or fewer when fewer are available. "
                         "Counts across genes are summed and may include shared records."
                     )
@@ -760,7 +778,8 @@ def render_annotation_results(annotations, site, selected_site, slots, timing_st
                             st.warning(
                                 f"Direct ClinVar evidence: {direct_clinvar_count} "
                                 "ClinVar variant(s) were verified as overlapping "
-                                "the selected off-target coordinates (GRCh38). "
+                                "the selected off-target coordinates (GRCh38) and meet "
+                                "the selected classification filter. "
                                 "These are existing clinical variant annotations, "
                                 "not evidence that CRISPR editing occurred."
                             )
@@ -768,9 +787,9 @@ def render_annotation_results(annotations, site, selected_site, slots, timing_st
                         else:
 
                             st.info(
-                                "Direct ClinVar evidence: No ClinVar variants "
-                                "were verified as overlapping the selected "
-                                "off-target coordinates in the current search. "
+                                "Direct ClinVar evidence: No ClinVar overlaps matching "
+                                "the selected classification filter were verified "
+                                "among the records examined. "
                                 "This does not establish that editing at this "
                                 "location would be safe."
                             )
