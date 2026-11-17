@@ -8,7 +8,7 @@ from ui.analysis_results import render_annotation_results
 from services.clinvar import CLINVAR_GENE_RECORD_LIMIT, CLINVAR_REGION_RECORD_LIMIT
 
 from services.annotations import (
-    collect_annotations, IncompleteAnnotations
+    collect_annotations, IncompleteAnnotations, retry_uniprot_annotations
 )
 
 st.set_page_config(
@@ -36,19 +36,21 @@ def get_annotation_cache():
 def load_site_annotations(chrom, start, end, gene_record_limit, on_update=None,
                           *, site_record_limit=CLINVAR_REGION_RECORD_LIMIT):
     # Results from one pair of limits must not satisfy a different request.
-    key = ("clinvar-search-parameters-v4", chrom, start, end,
+    key = ("uniprot-functions-v1", chrom, start, end,
            gene_record_limit, site_record_limit)
     cache = get_annotation_cache()
     cached = cache.get(key)
     if cached is not None:
+        cached = retry_uniprot_annotations(cached, on_update)
+        cache.update(key, cached)
         return cached
     results = collect_annotations(
         chrom, start, end, gene_record_limit=gene_record_limit, on_update=on_update,
         site_record_limit=site_record_limit,
     )
-    if results["errors"]:
+    if any(key[0] != "uniprot" for key in results["errors"]):
         raise IncompleteAnnotations(results)
-    cache.put(key, results)
+    cache.put(key, results, optional_errors={"uniprot"})
     return results
 
 
@@ -329,8 +331,8 @@ with analysis_tab:
                 ucsc_url
             )
 
-            # CRISPR prediction information
-            st.subheader("CRISPR Prediction")
+            # CRISPOR prediction information
+            st.subheader("CRISPOR Prediction")
 
             col1, col2 = st.columns(2)
 
@@ -369,8 +371,18 @@ with analysis_tab:
             "direct": direct_tab.empty(), "gene": gene_tab.empty(),
             "summary": summary_tab.empty(),
         }
+        busy_cursor = st.empty()
 
         def show_progress(snapshot):
+            if not snapshot.get("complete", True):
+                busy_cursor.html(
+                    '<span id="annotation-network-busy" hidden></span>'
+                    '<style>html:has(#annotation-network-busy), '
+                    'html:has(#annotation-network-busy) * '
+                    '{cursor: progress !important;}</style>'
+                )
+            else:
+                busy_cursor.empty()
             render_annotation_results(
                 snapshot, site, selected_site, slots, timing_status,
                 include_other_classifications=st.session_state["clinvar_include_other"],
@@ -384,5 +396,8 @@ with analysis_tab:
             )
         except IncompleteAnnotations as error:
             annotations = error.results
+        finally:
+            # Also restore the cursor when a lookup or rendering fails unexpectedly.
+            busy_cursor.empty()
         # A cache hit skips the REST work and immediately renders the final snapshot.
         show_progress(annotations)

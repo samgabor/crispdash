@@ -14,6 +14,11 @@ GENE = dict(gene_id="ENSG_TEST", gene_name="TEST", biotype="protein_coding",
 
 
 class ParallelAnnotationTests(unittest.TestCase):
+    def setUp(self):
+        uniprot = patch("services.uniprot.get_protein_functions", return_value={"proteins": []})
+        uniprot.start()
+        self.addCleanup(uniprot.stop)
+
     def test_progress_is_published_before_slow_requests_finish(self):
         release_clinvar = Event()
         snapshots = []

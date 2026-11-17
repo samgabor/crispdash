@@ -6,7 +6,7 @@ from copy import deepcopy
 
 from requests.exceptions import RequestException
 
-from services import clinvar, ensembl
+from services import clinvar, ensembl, uniprot
 from services.timing import timed_lookup
 
 
@@ -90,6 +90,8 @@ def collect_annotations(chrom, start, end, gene_record_limit=clinvar.CLINVAR_GEN
                         submit(("gene_information", gene_id),
                                ensembl.get_gene_information, gene_id)
                         symbol = gene.get("gene_name")
+                        if gene.get("biotype") == "protein_coding" and has_gene_symbol(symbol):
+                            submit(("uniprot", gene_id), uniprot.get_protein_functions, symbol)
                         if has_gene_symbol(symbol):
                             submit(
                                 ("gene_clinvar", gene_id), clinvar.annotate_clinvar_gene,
@@ -113,4 +115,36 @@ def collect_annotations(chrom, start, end, gene_record_limit=clinvar.CLINVAR_GEN
 
         results["complete"] = True
         publish()
+    return results
+
+
+def retry_uniprot_annotations(results, on_update=None):
+    """Retry only failed supplemental protein requests on a cached analysis."""
+    failures = [key for key in results["errors"] if key[0] == "uniprot"]
+    genes = {gene["gene_id"]: gene for gene in results["values"].get(("genes",), [])}
+    if not failures:
+        return results
+    results["complete"] = False
+    results["pending"] = failures.copy()
+    if on_update:
+        on_update(deepcopy(results))
+    with ThreadPoolExecutor(max_workers=6, thread_name_prefix="uniprot-retry") as pool:
+        jobs = {pool.submit(timed_lookup, uniprot.get_protein_functions,
+                            genes[key[1]]["gene_name"]): key for key in failures}
+        while jobs:
+            completed, _ = wait(jobs, return_when=FIRST_COMPLETED)
+            for job in completed:
+                key = jobs.pop(job)
+                outcome = job.result()
+                results["timings"][key] = {"elapsed_seconds": outcome["elapsed_seconds"],
+                                           "requests": outcome["requests"]}
+                if outcome["error"]:
+                    results["errors"][key] = outcome["error"]
+                else:
+                    results["errors"].pop(key, None)
+                    results["values"][key] = outcome["value"]
+            results["pending"] = list(jobs.values())
+            results["complete"] = not jobs
+            if on_update:
+                on_update(deepcopy(results))
     return results

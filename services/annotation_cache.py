@@ -1,4 +1,4 @@
-"""Cache successful annotation snapshots without caching UI progress messages."""
+"""Cache annotation snapshots; explicitly optional failures can be retried separately."""
 from copy import deepcopy
 from threading import Lock
 from time import monotonic
@@ -18,8 +18,15 @@ class AnnotationCache:
             entry = self.entries.get(key)
             return deepcopy(entry[1]) if entry else None
 
-    def put(self, key, result):
-        if result["errors"]:
+    def put(self, key, result, *, optional_errors=()):
+        if any(error_key[0] not in optional_errors for error_key in result["errors"]):
             return
         with self.lock:
             self.entries[key] = (monotonic() + self.ttl, deepcopy(result))
+
+    def update(self, key, result):
+        """Refresh supplemental results without extending the core data's expiry."""
+        with self.lock:
+            if key in self.entries:
+                expires, _ = self.entries[key]
+                self.entries[key] = (expires, deepcopy(result))

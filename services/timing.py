@@ -42,7 +42,7 @@ def timed_get(provider, url, **kwargs):
             # These fields identify the public annotation query without secrets.
             query = "; ".join(
                 f"{key}={params[key]}"
-                for key in ("db", "id", "term", "feature", "retstart")
+                for key in ("db", "id", "term", "feature", "retstart", "query")
                 if key in params
             )
             records.append({

@@ -101,6 +101,63 @@ def display_lookup_timing(annotations, key):
             )
 
 
+def display_uniprot_functions(annotations, gene):
+    """Supplement gene summaries with source-labelled, independently ready proteins."""
+    st.markdown("**UniProt — Protein Function**")
+    if gene.get("biotype") != "protein_coding":
+        st.info("Protein-function lookup is not applicable to this gene type.")
+        return
+    symbol = gene.get("gene_name")
+    if not symbol or str(symbol).strip().lower() == "unknown":
+        st.info("A recognized gene symbol is needed to match UniProt proteins reliably.")
+        return
+    key = ("uniprot", gene["gene_id"])
+    display_lookup_timing(annotations, key)
+    if key in annotations.get("pending", []):
+        st.info(f"Loading UniProt protein functions for {symbol}...")
+        return
+    if key in annotations["errors"]:
+        st.warning(f"UniProt protein functions are unavailable for {symbol}. "
+                   "Select Analyze Selected Site to retry; other annotations remain available.")
+        if config.DEBUG:
+            st.caption(annotations["errors"][key])
+        return
+    result = annotations["values"].get(key)
+    if result is None:
+        st.info(f"Loading UniProt protein functions for {symbol}...")
+        return
+    proteins = result["proteins"]
+    if not proteins:
+        st.info("No reviewed human UniProt entry with a matching gene name or synonym "
+                "was found. This does not mean the gene has no biological function.")
+    if result.get("rejected_matches"):
+        st.caption(f"{result['rejected_matches']} search match(es) did not pass the human, "
+                   "reviewed-entry, and gene-name checks.")
+    if len(proteins) > 1:
+        st.warning(f"{len(proteins)} reviewed protein entries match {symbol}. "
+                   "All matches are shown; no single protein was selected automatically.")
+    for protein in proteins:
+        st.write("Protein:", protein["protein_name"])
+        st.link_button(f"UniProt {protein['accession']}",
+                       f"https://www.uniprot.org/uniprotkb/{protein['accession']}/entry",
+                       help="Open the reviewed UniProt protein record.")
+        st.caption("Reviewed · Human · Matched gene names: " + ", ".join(protein["gene_names"]))
+        function = "\n\n".join(protein["functions"])
+        if not function:
+            st.info("This UniProt entry has no function annotation. This does not mean "
+                    "the protein has no biological function.")
+        elif len(function) > 450:
+            st.write(function[:450].rsplit(" ", 1)[0] + "…")
+            with st.expander(f"Full function annotation — {protein['accession']}"):
+                st.write(function)
+        else:
+            st.write(function)
+    st.caption(f"UniProt annotation retrieved: {result['retrieved_at']} (UTC)" +
+               (" · Reused from the gene-level cache." if result.get("from_cache") else ""))
+    st.caption("Source: UniProt. These annotations describe normal protein function; "
+               "they do not predict the effect of the selected off-target edit.")
+
+
 def render_annotation_results(annotations, site, selected_site, slots, timing_status,
                               *, include_other_classifications=False):
     parameters = annotations.get("search_parameters", {})
@@ -203,6 +260,8 @@ def render_annotation_results(annotations, site, selected_site, slots, timing_st
 
                     if not ready(("gene_information", gene_id)):
                         st.info(f"Loading gene details for {gene_id}...")
+                        st.markdown(f"### {gene.get('gene_name') or gene_id}")
+                        display_uniprot_functions(annotations, gene)
                         continue
 
                     # Handle failures outside the cache so a later run can retry.
@@ -290,6 +349,8 @@ def render_annotation_results(annotations, site, selected_site, slots, timing_st
                             "gene symbol, so an NCBI Gene summary "
                             "cannot currently be matched reliably."
                         )
+
+                    display_uniprot_functions(annotations, gene)
 
                     # Ensembl external link
                     ensembl_url = (
