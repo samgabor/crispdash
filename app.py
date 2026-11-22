@@ -5,6 +5,8 @@ import plotly.express as px
 from services.dataset import load_selected_offtargets
 from services.annotation_cache import AnnotationCache
 from ui.analysis_results import render_annotation_results
+from ui.expert_chat import render_expert_chat
+from services.expert_chat import get_chat_settings
 from services.clinvar import CLINVAR_GENE_RECORD_LIMIT, CLINVAR_REGION_RECORD_LIMIT
 
 from services.annotations import (
@@ -93,6 +95,7 @@ def analyze_selected_site():
         "site_record_limit": int(site_limit), "gene_record_limit": int(gene_limit),
     }
     st.session_state["analyzed_site"] = st.session_state["selected_site"]
+    st.session_state["analysis_request_id"] = st.session_state.get("analysis_request_id", 0) + 1
     st.session_state["main_tab"] = ANALYSIS_TAB
 
 
@@ -287,10 +290,18 @@ with analysis_tab:
             f"Source region: {site['regionType']} · CFD: {site['cfdOfftargetScore']:.3f}"
         )
         timing_status = st.empty()
-        details_tab, genes_tab, exons_tab, direct_tab, gene_tab, summary_tab = st.tabs([
+        chat_settings = get_chat_settings()
+        tab_names = [
             "Site Details", "Genes & Function", "Exons",
             "ClinVar Site Overlaps", "ClinVar Gene Context", "Evidence Summary"
-        ])
+        ]
+        if chat_settings:
+            tab_names.append("Expert Chat")
+        analysis_tabs = st.tabs(tab_names)
+        details_tab, genes_tab, exons_tab, direct_tab, gene_tab, summary_tab = analysis_tabs[:6]
+        if chat_settings:
+            expert_slot = analysis_tabs[6].empty()
+            expert_slot.info("Expert Chat will be available when all annotation requests have finished.")
         with details_tab:
             # Genomic location
             st.subheader("Genomic Location")
@@ -390,10 +401,15 @@ with analysis_tab:
 
         try:
             applied_parameters = st.session_state["analysis_search_parameters"]
-            annotations = load_site_annotations(
-                chrom, start, end, applied_parameters["gene_record_limit"],
-                on_update=show_progress, site_record_limit=applied_parameters["site_record_limit"],
-            )
+            run_key = (selected_guide, selected_site, st.session_state.get("analysis_request_id", 0))
+            previous_run = st.session_state.get("last_annotation_run")
+            if previous_run and previous_run["key"] == run_key:
+                annotations = previous_run["annotations"]
+            else:
+                annotations = load_site_annotations(
+                    chrom, start, end, applied_parameters["gene_record_limit"],
+                    on_update=show_progress, site_record_limit=applied_parameters["site_record_limit"],
+                )
         except IncompleteAnnotations as error:
             annotations = error.results
         finally:
@@ -401,3 +417,12 @@ with analysis_tab:
             busy_cursor.empty()
         # A cache hit skips the REST work and immediately renders the final snapshot.
         show_progress(annotations)
+        st.session_state["last_annotation_run"] = {"key": run_key, "annotations": annotations}
+        if chat_settings:
+            with expert_slot.container():
+                render_expert_chat(
+                    chat_settings, annotations, site.to_dict(),
+                    {key: guide_metadata[key] for key in
+                     ("name", "genome", "disease", "target", "position", "guideId", "guideSeq", "crispor")},
+                    st.session_state["clinvar_include_other"],
+                )

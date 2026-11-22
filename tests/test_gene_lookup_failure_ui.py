@@ -28,6 +28,7 @@ class GeneLookupFailureTests(unittest.TestCase):
 
     def run_analysis(self, genes, lookup, gene_clinvar_error=None):
         with (
+            patch("services.expert_chat.get_chat_settings", return_value=None),
             patch("services.ensembl.get_overlapping_genes", return_value=genes),
             patch("services.ensembl.get_overlapping_exons", return_value=[]),
             patch("services.ensembl.get_gene_information", side_effect=lookup),
